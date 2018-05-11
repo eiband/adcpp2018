@@ -16,7 +16,7 @@ In order to build a `compile_commands.json` file to interop with clang tools cre
 </Project>
 ```
 
-When building the specified configuration no compilation is performed. Instead the compile commands are written into the compile_commands.json which can then be used as input to a lot of clang-based tools such as clang-tidy.
+When building the specified configuration no compilation is performed. Instead the compile commands are written into the `compile_commands.json` which can then be used as input to a lot of clang-based tools such as clang-tidy.
 
 ## License
 
