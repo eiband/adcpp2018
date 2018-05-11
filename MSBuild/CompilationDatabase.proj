@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <UsingTask TaskName="GetCLVersion" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Version ParameterType="System.Int32" Output="true"/>
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs">
+        <![CDATA[
+        var regex = new System.Text.RegularExpressions.Regex(@"\s+([0-9]+\.[0-9]+)(?:\.[0-9]+)*\s+");
+        var process = new System.Diagnostics.Process();
+        process.StartInfo.FileName = "cl.exe";
+        process.StartInfo.UseShellExecute = false;
+        process.StartInfo.RedirectStandardError = true;
+        process.StartInfo.CreateNoWindow = true;
+        process.StartInfo.ErrorDialog = false;
+        process.Start();
+
+        Version = 0;
+
+        string line;
+        while ((line = process.StandardError.ReadLine()) != null) 
+        {
+          var match = regex.Match(line);
+          if (match.Success)
+          {
+            Version = Convert.ToInt32(match.Groups[1].Value.Replace(".", ""));
+            break;
+          }
+        }
+
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+          Version = 0;
+      ]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <UsingTask TaskName="WriteCompileDatabase" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <CompileCommands ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true"/>
+      <CompileDatabase ParameterType="Microsoft.Build.Framework.ITaskItem" Required="true"/>
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs">
+        <![CDATA[
+        using (var writer = new StreamWriter(CompileDatabase.GetMetadata("FullPath")))
+        {
+          writer.Write("[\n");
+          writer.Write(string.Join(",\n", CompileCommands.Select(command =>
+          {
+            using (var reader = new StreamReader(command.GetMetadata("FullPath")))
+            {
+              return reader.ReadToEnd();
+            }
+          })));
+          writer.Write("]");
+        }
+      ]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <!--
+  Replace calls to cl.exe with calls to our own tool. This tool will mangle and
+  dump all command line parameters passed from the build system.
+  -->
+
+  <PropertyGroup>
+    <CLToolPath>$(MSBuildThisFileDirectory)/bin/</CLToolPath>
+    <CLToolExe>CompileCommand.exe</CLToolExe>
+    <CLToolArchitecture>Managed32Bit</CLToolArchitecture>
+  </PropertyGroup>
+
+  <!--
+  Disable link targets because we are only interested in collecting the compile
+  commands, not the link commands.
+  -->
+
+  <Target Name="Lib"/>
+  <Target Name="BuildLink"/>
+
+  <!--
+  Determine the cl.exe version prior to executing our tool. This version is
+  stored in the file _version.txt and is an input to CompileCommand.exe.
+  -->
+
+  <PropertyGroup>
+    <MscVersionFile>$(IntDir)_version.txt</MscVersionFile>
+  </PropertyGroup>
+
+  <Target Name="MscVersion" Condition="!Exists('$(MscVersionFile)')"
+          DependsOnTargets="PrepareForBuild" BeforeTargets="ClCompile">
+    <GetCLVersion>
+      <Output PropertyName="MscVersion" TaskParameter="Version"/>
+    </GetCLVersion>
+    <Error Condition="'$(MscVersion)'=='' or '$(MscVersion)'=='0'" Text="Could not determine compiler version (MSC_VER)!"/>
+    <WriteLinesToFile Lines="$(MscVersion)" File="$(MscVersionFile)" Overwrite="true" Encoding="Unicode"/>
+    <PropertyGroup>
+      <!--
+      Clear MscVersion again because this task is only executed if the
+      MscVersion file does not already exist. If this version is required by
+      another task we should create another target which reads this file back
+      in.
+      -->
+      <MscVersion></MscVersion>
+    </PropertyGroup>
+  </Target>
+
+  <!--
+  Collect all generated JSON files for each compile command into one
+  compile_commands.json file.
+  -->
+
+  <PropertyGroup>
+    <CompileDatabase>$(OutDir)compile_commands.json</CompileDatabase>
+  </PropertyGroup>
+
+  <Target Name="ComputeCompileDatabaseInputs" DependsOnTargets="ComputeCLOutputs">
+    <ItemGroup>
+      <CompileDatabaseCommand Include="@(Obj->'%(RelativeDir)%(Filename).json')"/>
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CompileDatabase" Condition="'$(ToolsNoCompile)'!='true'"
+          DependsOnTargets="ComputeCompileDatabaseInputs" AfterTargets="ClCompile">
+    <Error Condition="'$(Platform)'!='x64'" Text="Platform '$(Platform)' currently not supported! The only supported platform is x64 (-m64 is hardcoded in CompileCommand.exe)."/>
+    <WriteCompileDatabase CompileCommands="@(CompileDatabaseCommand)" CompileDatabase="$(CompileDatabase)"/>
+  </Target>
+
+  <Target Name="CompileDatabaseClean" BeforeTargets="CppClean">
+    <Delete Files="$(MscVersionFile);$(CompileDatabase)"/>
+  </Target>
+
+</Project>
